@@ -7,7 +7,7 @@ User=notesock
 Group=notesock
 
 EnvironmentFile=/etc/notesock/notesock.env
-WorkingDirectory=notesock
+WorkingDirectory=/var/lib/notesock
 RuntimeDirectory=notesock
 ExecStart=/usr/bin/notesock -s /run/notesock -d /var/lib/notesock -w $N_WORKERS --host $HOST -x $EXPIRY_SECONDS -l $MAX_PASTE_SIZE_KB -t $TIMEOUT_MS
 Restart=on-failure
