@@ -11,7 +11,9 @@ It is meant to be used with `netcat`:
 $ echo "Hello world" | ncat notesock.example.org 1234
 https://notesock.example.org/abc123 | expires in 5m
 ```
-This saves the paste do `/configured/dir/abc123/index.txt` which makes sure that browsers accessing the URL will interpret the file as `.txt` only.
+This saves the paste do `/configured/dir/abc123/index.txt` which makes sure that browsers accessing the URL will interpret the file as `.txt` only, as only UTF-8 encoded data is accepted by the server.
+
+To receive the paste:
 ```console
 $ curl https://notesock.example.org/abc123
 Hello world
@@ -19,13 +21,15 @@ Hello world
 
 The files are stored unencrypted, thus, the user is made responsible to make their information private, e.g. by using `gpg`:
 ```console
-$ echo "My secret paste" | gpg -ca | ncat notesock.example.org 1234
-https://notesock.example.org/def456
+$ echo "hehe" > mysecret.file
+$ gpg -cao mysecret.file.gpg mysecret.file
+$ ncat notesock.example.org 1234 < mysecret.file.gpg  
+https://notesock.example.org/def456 ...
 ```
 
 ```console
 $ curl https://notesock.example.org/def456 | gpg -d
-My secret paste
+hehe
 ```
 
 ## Getting started:
@@ -56,5 +60,3 @@ The same webserver that you would need for serving the pastes via http can be us
 
 > [!TIP] 
 > If you like to use systemd, you can refer to the [example unit](systemd/notesock.service).
-
-### 
