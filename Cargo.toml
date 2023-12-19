@@ -1,0 +1,21 @@
+[package]
+name = "notesock"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+# abort on panic since currently, main thread does not join workers; 
+# This way we won't know if any worker has panicked.
+# See: https://stackoverflow.com/a/74854542
+panic = 'abort'
+
+[dependencies]
+clap = { version = "4.4.11", features = ["std", "derive"], default-features = false }
+emojis = "0.6.1"
+git-version = "0.3.9"
+log = { version = "0.4.20", default-features = false }
+rand = "0.8.5"
+regex = "1.10.2"
+simplelog = { version = "0.12.1", features = ["termcolor", "paris"], default-features = false }
+socket2 = "0.5.5"
+spmc = "0.3.0"

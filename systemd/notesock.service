@@ -1,0 +1,37 @@
+[Unit]
+Description=notesock terminal pastebin server
+
+[Service]
+Type=exec
+User=notesock
+Group=notesock
+
+EnvironmentFile=/etc/notesock/notesock.env
+WorkingDirectory=notesock
+RuntimeDirectory=notesock
+ExecStart=/usr/bin/notesock -s /run/notesock -d /var/lib/notesock -w $N_WORKERS --host $HOST -x $EXPIRY_SECONDS -l $MAX_PASTE_SIZE_KB -t $TIMEOUT_MS
+Restart=on-failure
+RestartSec=30s
+
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=true
+PrivateDevices=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectHostname=true
+ProtectKernelModules=true
+PrivateUsers=true
+ProtectClock=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-Service
+
+[Install]
+WantedBy=multi-user.target
