@@ -68,8 +68,11 @@ This pastebin implementation does not rely on dropping privileges for fool-proof
 Fits right into your `~/.config/fish/config.fish`!
 
 ### [`fish`](https://github.com/fish-shell/fish-shell) on wayland
-
+Workflow: copy something on your desktop (<kbd>Ctrl+C</kbd>, or rightclick -> copy), execute this pipe (preferably with an alias) and observe <kbd>Ctrl+V</kbd> now inserting the link to the paste!
 ```console
 $ wl-paste | string trim | ncat notesock.example.org 1234 | tee /dev/tty | string split -f1 '|' | string trim | wl-copy
 ```
-Workflow: copy something on your desktop (<kbd>Ctrl+C</kbd>, or rightclick -> copy), execute this pipe (preferably with an alias) and observe <kbd>Ctrl+V</kbd> now inserting the link to the paste!
+With encryption:
+```console
+$ ncat notesock.example.org 1234 <(wl-paste | gpg -ca | psub -F) | tee /dev/tty | string split -f1 '|' | string trim | wl-copy
+```
