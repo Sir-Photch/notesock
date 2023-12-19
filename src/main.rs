@@ -168,14 +168,19 @@ fn paste_worker(
             }
         };
 
-        stream
+        let read_timeout = stream
             .set_read_timeout(Some(Duration::from_millis(args.read_timeout)))
-            .map_err(|why| warn!("{} | set_read_timeout: {}", tag, why))
-            .ok();
-        stream
+            .map_err(|why| warn!("{} | set_read_timeout: {}", tag, why));
+        let write_timeout = stream
             .set_write_timeout(Some(Duration::from_millis(args.read_timeout)))
-            .map_err(|why| warn!("{} | set_write_timeout: {}", tag, why))
-            .ok();
+            .map_err(|why| warn!("{} | set_write_timeout: {}", tag, why));
+
+        if read_timeout.is_ok() && write_timeout.is_ok() {
+            stream
+                .set_nonblocking(false)
+                .map_err(|why| warn!("{} | set_nonblocking: {}", tag, why))
+                .ok();
+        }
 
         let mut buf = vec![0; paste_limit + 1];
         let mut read = 0;
