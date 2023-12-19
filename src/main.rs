@@ -18,7 +18,6 @@
  */
 
 use clap::Parser;
-use git_version::git_version;
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
@@ -35,7 +34,6 @@ use std::time::{Duration, Instant};
 use std::io::{ErrorKind, Read, Write};
 
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
-const GIT_TAG: &str = git_version!();
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
@@ -355,9 +353,8 @@ fn main() {
     let id_set = Arc::new(Mutex::new(id_set));
 
     info!(
-        "Starting notesock v{} tag {} on <b>{}</b> 🧦",
+        "Starting notesock v{} on <b>{}</b> 🧦",
         CARGO_VERSION,
-        GIT_TAG,
         socket_path
             .canonicalize()
             .expect("Bad socket path")
