@@ -8,6 +8,7 @@ Group=notesock
 
 EnvironmentFile=/etc/notesock/notesock.env
 WorkingDirectory=/var/lib/notesock
+ReadWritePaths=/var/lib/notesock
 RuntimeDirectory=notesock
 ExecStart=/usr/bin/notesock -s /run/notesock -d /var/lib/notesock -w $N_WORKERS --host $HOST -x $EXPIRY_SECONDS -l $MAX_PASTE_SIZE_KB -t $TIMEOUT_MS
 Restart=on-failure
@@ -31,7 +32,7 @@ ProtectKernelModules=true
 PrivateUsers=true
 ProtectClock=true
 SystemCallArchitectures=native
-SystemCallFilter=@system-Service
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target

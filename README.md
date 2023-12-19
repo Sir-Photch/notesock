@@ -35,7 +35,7 @@ My secret paste
 
 ### Packages
 
-- Arch User Repository: _TODO_
+- Arch User Repository: [notesock](https://aur.archlinux.org/packages/notesock)
 
 ### Build
 
