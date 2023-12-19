@@ -74,5 +74,5 @@ $ wl-paste | string trim | ncat notesock.example.org 1234 | tee /dev/tty | strin
 ```
 With encryption:
 ```console
-$ ncat notesock.example.org 1234 <(wl-paste | gpg -ca | psub -F) | tee /dev/tty | string split -f1 '|' | string trim | wl-copy
+$ ncat notesock.example.org 1234 <(wl-paste | gpg -ca | psub) | tee /dev/tty | string split -f1 '|' | string trim | wl-copy
 ```
