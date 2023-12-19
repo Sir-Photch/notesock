@@ -58,5 +58,7 @@ The same webserver that you would need for serving the pastes via http can be us
 
 ### systemd
 
+This pastebin implementation does not rely on dropping privileges for fool-proofing, rather, usage via a systemd unit is preferred.
+
 > [!TIP] 
 > If you like to use systemd, you can refer to the [example unit](systemd/notesock.service).
