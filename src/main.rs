@@ -157,7 +157,9 @@ fn paste_worker(
     let mut buf = vec![0; paste_limit + 1];
 
     let shutdown = |stream: &mut Socket, mode: Shutdown, log_error_as: Option<log::Level>| {
-        stream.flush().ok();
+        if mode == Shutdown::Write || mode == Shutdown::Both {
+            stream.flush().ok();
+        }
         stream
             .shutdown(mode)
             .map_err(|why| {
