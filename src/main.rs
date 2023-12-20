@@ -147,6 +147,9 @@ fn paste_worker(
     let paste_dir = Path::new(&args.paste_dir);
     let paste_timeout = Duration::from_secs(args.paste_expiry_sec);
 
+    // +1 to catch pastes that violate the limit
+    let mut buf = vec![0; paste_limit + 1];
+
     let shutdown = |stream: &mut Socket, mode: Shutdown, log_error_as: Option<log::Level>| {
         stream.flush().ok();
         stream
@@ -177,7 +180,7 @@ fn paste_worker(
             .map_err(|why| warn!("{} | set_write_timeout: {}", tag, why))
             .ok();
 
-        let mut buf = vec![0; paste_limit + 1];
+        buf.clear();
         let mut read = 0;
 
         loop {
