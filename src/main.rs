@@ -117,10 +117,16 @@ fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeSet) 
                             CLEANUP_WORKER_TAG,
                             paste_path.display()
                         );
-                        // if the mutex is poisoned, it is time to panic!
+
+                        // these checks are not necessary for release builds since
+                        // workers panicking would cause the program to abort.
+                        // still, I'm keeping the verbosity here
                         ids.lock()
-                            .expect("Some worker has panicked")
-                            .remove(paste_path.as_os_str());
+                            .map(|mut lock| lock.remove(paste_path.as_os_str()))
+                            .map_err(|why| {
+                                error!("{} | ids.lock.remove: {}", CLEANUP_WORKER_TAG, why)
+                            })
+                            .ok();
                     }
                     Err(why) => {
                         error!(
