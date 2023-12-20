@@ -188,7 +188,12 @@ fn paste_worker(
             .map_err(|why| warn!("{} | set_write_timeout: {}", tag, why))
             .ok();
 
-        buf.clear();
+        // this is necessary if the buffer is preallocated because
+        //  1. stream.read() will only read up to buf.len()
+        //  2. buf.truncate(newlen) reduces buf.len(),
+        //     which reduces it's effective size for stream.read()
+        buf.resize(paste_limit + 1, 0);
+
         let mut read = 0;
 
         loop {
