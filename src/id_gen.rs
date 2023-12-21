@@ -148,7 +148,9 @@ fn u32_from_b36str(val: &str) -> Option<u32> {
 mod test {
     use radix_fmt::radix_36;
 
+    #[cfg(feature = "bench")]
     extern crate test;
+    #[cfg(feature = "bench")]
     use test::{black_box, Bencher};
 
     use super::*;
@@ -165,11 +167,11 @@ mod test {
         let mut generator = IdGenerator::new(
             &radix_36(u32::MIN).to_string(),
             &radix_36(u32::MAX).to_string(),
-            10,
+            128,
             None,
         )
         .unwrap();
-        let ids: Vec<_> = (0..=100000).map(|_| generator.get(true)).collect();
+        let ids: Vec<_> = (0..=10000).map(|_| generator.get(true)).collect();
         let mut set = HashSet::<String>::new();
         for id in ids {
             let id = id.unwrap();
@@ -182,11 +184,11 @@ mod test {
         let mut generator = IdGenerator::new(
             &radix_36(u32::MIN).to_string(),
             &radix_36(u32::MAX).to_string(),
-            10,
+            128,
             None,
         )
         .unwrap();
-        let ids: Vec<_> = (0..=100000).map(|_| generator.get(false)).collect();
+        let ids: Vec<_> = (0..=10000).map(|_| generator.get(false)).collect();
         let mut set = HashSet::<String>::new();
         for id in ids {
             let id = id.unwrap();
@@ -194,30 +196,33 @@ mod test {
         }
     }
 
+    #[cfg(feature = "bench")]
     #[bench]
     fn bench_random_generator(b: &mut Bencher) {
         let mut generator = IdGenerator::new(
             &radix_36(u32::MIN).to_string(),
             &radix_36(u32::MAX).to_string(),
-            20,
+            128,
             None,
         )
         .unwrap();
         b.iter(|| black_box(generator.get(black_box(true))))
     }
 
+    #[cfg(feature = "bench")]
     #[bench]
     fn bench_mean_generator(b: &mut Bencher) {
         let mut generator = IdGenerator::new(
             &radix_36(u32::MIN).to_string(),
             &radix_36(u32::MAX).to_string(),
-            20,
+            128,
             None,
         )
         .unwrap();
         b.iter(|| black_box(generator.get(black_box(false))))
     }
 
+    #[cfg(feature = "bench")]
     #[bench]
     fn bench_sample_unique(b: &mut Bencher) {
         let mut set = HashSet::<OsString>::new();

@@ -16,8 +16,7 @@
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  */
-
-#![feature(test)]
+#![cfg_attr(feature = "bench", feature(test))]
 
 mod id_gen;
 
