@@ -21,12 +21,11 @@
 mod id_gen;
 
 use clap::Parser;
-use id_gen::sample_unique;
+use id_gen::PartitionIdGenerator;
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::fs::{self, Permissions};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
@@ -36,6 +35,8 @@ use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 use std::io::{ErrorKind, Read, Write};
+
+use crate::id_gen::IdGenerator;
 
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,19 +62,18 @@ struct Args {
     no_clean_pastedir_on_start: bool,
 }
 
-type SafeSet = Arc<Mutex<HashSet<OsString>>>;
+type SafeGen = Arc<Mutex<PartitionIdGenerator>>;
 
 const CLEANUP_WORKER_TAG: &str = "🧹";
 
 const SOCKET_FILENAME: &str = "note.sock";
 
 const PASTE_ID_MIN_LEN: usize = 5;
-const PASTE_ID_MAX_ITER: usize = 3;
 
 // regexp should describe set of PASTE_ID_SYMBOLS
 const PASTE_ID_REGEXP: &str = "[a-z0-9]";
 
-fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeSet) {
+fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeGen) {
     loop {
         match rx_cleanup.recv() {
             Err(why) => error!("{} | rx_cleanup.recv: {}", CLEANUP_WORKER_TAG, why),
@@ -95,7 +95,7 @@ fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeSet) 
                         // workers panicking would cause the program to abort.
                         // still, I'm keeping the verbosity here
                         ids.lock()
-                            .map(|mut lock| lock.remove(paste_path.as_os_str()))
+                            .map(|mut lock| lock.remove(&paste_path.as_os_str().to_string_lossy()))
                             .map_err(|why| {
                                 error!("{} | ids.lock.remove: {}", CLEANUP_WORKER_TAG, why)
                             })
@@ -118,7 +118,7 @@ fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeSet) 
 fn paste_worker(
     tag: &str,
     rx_paste: spmc::Receiver<Socket>,
-    ids: SafeSet,
+    gen: SafeGen,
     tx_clean: mpsc::Sender<(Instant, PathBuf)>,
     args: Args,
 ) {
@@ -210,9 +210,24 @@ fn paste_worker(
                     .ok();
             }
             Ok(payload) => {
-                let mut ids = ids.lock().expect("Some thread has crashed!");
+                let mut gen = gen.lock().expect("Some thread has crashed!");
 
-                let paste_id = sample_unique(&ids, PASTE_ID_MIN_LEN, PASTE_ID_MAX_ITER);
+                let paste_id = match gen.get() {
+                    Some(id) => id,
+                    None => {
+                        // no ID can be generated, "adress space is full"
+                        stream
+                            .write_all(
+                                b"server is currently not accepting new pastes. try again later.\n",
+                            )
+                            .map_err(|why| {
+                                warn!("{} | stream.write_all on unavailable ids: {}", tag, why)
+                            })
+                            .ok();
+                        shutdown(&mut stream, Shutdown::Both, Some(Level::Warn));
+                        continue;
+                    }
+                };
 
                 let paste_dir_path = paste_dir.join(&paste_id);
 
@@ -223,18 +238,18 @@ fn paste_worker(
                 }) {
                     Ok(paste_path) => {
                         info!("{} | saved paste to {}", tag, paste_path.display());
-                        ids.insert(OsString::from(&paste_id));
                         tx_clean
                             .send((Instant::now() + paste_timeout, paste_dir_path))
                             .expect("Where did my cleanup task go?"); // if we can't cleanup anymore, it is time to panic!
                     }
                     Err(why) => {
+                        gen.remove(&paste_id);
                         error!("{} | write-to-disk error: {}", tag, why);
                         continue;
                     }
                 }
 
-                drop(ids);
+                drop(gen);
 
                 let expiry_string = match args.paste_expiry_sec {
                     x if x > 60 => match x % 60 {
@@ -282,7 +297,7 @@ fn main() {
         regex::Regex::new(&format!("{}{{{},}}", PASTE_ID_REGEXP, PASTE_ID_MIN_LEN))
             .expect("Regex compilation failed");
 
-    let id_set = fs::read_dir(paste_path)
+    let id_set: HashSet<_> = fs::read_dir(paste_path)
         .expect("Can't access paste dir")
         .filter_map(|f| {
             let entry = f.ok()?;
@@ -297,7 +312,13 @@ fn main() {
 
             Some(name)
         })
-        .collect::<HashSet<_>>();
+        .collect();
+
+    let id_set = if id_set.is_empty() {
+        None
+    } else {
+        Some(id_set)
+    };
 
     drop(paste_id_regex);
 
@@ -330,16 +351,26 @@ fn main() {
     )])
     .unwrap();
 
-    if !args.no_clean_pastedir_on_start {
-        for f in id_set.iter() {
-            fs::remove_dir_all(paste_path.join(f))
-                .map(|()| info!("Cleaned up old '{:?}'", f))
-                .map_err(|why| error!("Could not clean up '{:?}': {}", f, why))
-                .ok();
+    if let Some(ref set) = id_set {
+        if !args.no_clean_pastedir_on_start {
+            for f in set.iter() {
+                fs::remove_dir_all(paste_path.join(f))
+                    .map(|()| info!("Cleaned up old '{:?}'", f))
+                    .map_err(|why| error!("Could not clean up '{:?}': {}", f, why))
+                    .ok();
+            }
         }
     }
+    let id_set = id_set.map(|set| {
+        set.iter()
+            .filter_map(|v| v.to_str().map(|v| v.to_owned()))
+            .collect::<HashSet<String>>()
+    });
 
-    let id_set = Arc::new(Mutex::new(id_set));
+    let generator = Arc::new(Mutex::new(
+        PartitionIdGenerator::new("1111", "zzzz", true, 1024, id_set)
+            .expect("Could not create id generator"),
+    ));
 
     info!(
         "Starting notesock v{} on <b>{}</b> 🧦",
@@ -362,13 +393,13 @@ fn main() {
 
     for tag in worker_tags {
         let args = args.clone();
-        let id_set = id_set.clone();
+        let id_set = generator.clone();
         let rx_paste = rx_paste.clone();
         let tx_cleanup = tx_cleanup.clone();
         thread::spawn(move || paste_worker(tag, rx_paste, id_set, tx_cleanup, args));
     }
 
-    thread::spawn(|| cleanup_worker(rx_cleanup, id_set));
+    thread::spawn(|| cleanup_worker(rx_cleanup, generator));
 
     loop {
         match socket.accept() {
