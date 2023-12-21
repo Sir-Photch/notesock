@@ -32,6 +32,7 @@ use std::fs::{self, Permissions};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::str;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
@@ -43,6 +44,7 @@ use crate::id_gen::IdGenerator;
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug, Clone)]
+#[command(author, version)]
 struct Args {
     #[arg(short = 's', long = "sockdir", default_value_t = String::from("/run/notesock"))]
     socket_dir: String,
@@ -128,8 +130,7 @@ fn paste_worker(
     args: Args,
 ) {
     let paste_limit = args.paste_len_kib * 1024;
-    // add some slack to account for proxy header
-    let slack = 1 + if args.talk_proxy { 1024 } else { 0 };
+    let slack = if args.talk_proxy { 1024 } else { 0 } + 1;
     let paste_dir = Path::new(&args.paste_dir);
     let paste_timeout = Duration::from_secs(args.paste_expiry_sec);
     let exceeded_message = format!("Exceeded limit of {} kiB\n", args.paste_len_kib);
@@ -197,29 +198,58 @@ fn paste_worker(
 
         shutdown(&mut stream, Shutdown::Read);
 
+        let (mut header_len, mut payload_len) = (0, msg_size);
+
         if args.talk_proxy {
-            let mut buf = &buf.as_mut_slice()[..];
-            match proxy_protocol::parse(&mut buf) {
-                Ok(header) => info!("{} | {} kiB incoming | {:?}", msg_size / 1024, tag, header),
+            let msg_len = buf.len();
+
+            let mut slice = &buf.as_mut_slice()[..];
+            match proxy_protocol::parse(&mut slice) {
+                Ok(header) => info!(
+                    "{} | {} kiB incoming | {:?}",
+                    tag,
+                    msg_size as f32 / 1024.0,
+                    header
+                ),
                 Err(why) => {
                     debug!("{} | proxy_protocol.parse: {}", tag, why);
                     shutdown(&mut stream, Shutdown::Write);
                     continue;
                 }
             }
+
+            payload_len = slice.len();
+            header_len = msg_len - payload_len;
+
+            #[cfg(debug_assertions)]
+            {
+                assert!(msg_len != payload_len);
+                trace!(
+                    "{} | msg({}) | header({}): {:?} | payload({}): {:?}",
+                    tag,
+                    msg_len,
+                    header_len,
+                    std::str::from_utf8(&buf[..header_len]),
+                    payload_len,
+                    std::str::from_utf8(&buf[header_len..]).map(|p| {
+                        if p.len() > 32 {
+                            p[..29].to_owned() + "..."
+                        } else {
+                            p.to_string()
+                        }
+                    })
+                )
+            }
         }
 
-        // remaining elements after parse() possibly drained proxy header
-        let payload_size = buf.len();
-        debug_assert!(!args.talk_proxy || payload_size != msg_size);
-
-        if payload_size > paste_limit {
+        if payload_len > paste_limit {
             warn!("{} | exceeded paste limit", tag);
             reply(&mut stream, &exceeded_message);
             shutdown(&mut stream, Shutdown::Write);
+            continue;
         }
 
-        let payload = match std::str::from_utf8(&buf) {
+        let payload = match std::str::from_utf8(&buf[header_len..]) {
             Ok(pld) => pld,
             Err(why) => {
                 warn!("{} | invalid utf-8: {}", tag, why);
@@ -339,11 +369,6 @@ fn main() {
     socket
         .set_nonblocking(false)
         .expect("Could not set socket to blocking");
-    /*
-    socket
-        .set_recv_buffer_size(args.paste_len_kb * 1024)
-        .expect("Could not set recv buffer size");
-    */
     socket
         .listen(args.workers as i32 * 2)
         .expect("Could not start listening");
@@ -356,7 +381,14 @@ fn main() {
     )])
     .unwrap();
 
-    debug!("socket recv buffer size {:?}", socket.recv_buffer_size());
+    info!(
+        "Starting notesock v{} on <b>{}</b> 🧦",
+        CARGO_VERSION,
+        socket_path
+            .canonicalize()
+            .expect("Bad socket path")
+            .display()
+    );
 
     if let Some(ref set) = id_set {
         if !args.no_clean_pastedir_on_start {
@@ -383,15 +415,6 @@ fn main() {
         )
         .expect("Could not create id generator"),
     ));
-
-    info!(
-        "Starting notesock v{} on <b>{}</b> 🧦",
-        CARGO_VERSION,
-        socket_path
-            .canonicalize()
-            .expect("Bad socket path")
-            .display()
-    );
 
     let (mut tx_paste, rx_paste) = spmc::channel();
     let (tx_cleanup, rx_cleanup) = mpsc::channel();
