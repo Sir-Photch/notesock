@@ -17,7 +17,6 @@ bench = []
 anyhow = "1.0.75"
 clap = { version = "4.4.11", features = ["std", "derive"], default-features = false }
 emojis = "0.6.1"
-itertools = "0.12.0"
 log = { version = "0.4.20", default-features = false }
 num = "0.4.1"
 radix_fmt = "1.0.0"

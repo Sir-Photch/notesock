@@ -19,9 +19,9 @@
 #![cfg_attr(feature = "bench", feature(test))]
 
 mod id_gen;
+use id_gen::*;
 
 use clap::Parser;
-use id_gen::PartitionIdGenerator;
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
@@ -46,32 +46,31 @@ struct Args {
     socket_dir: String,
     #[arg(short = 'm', long = "mode", default_value_t = 0o660)]
     socket_mode: u32,
-    #[arg(long = "host", default_value_t = String::from("http://localhost"))]
+    #[arg(short = 'H', long = "host", default_value_t = String::from("http://localhost"))]
     host: String,
-    #[arg(short = 'w', default_value_t = 2)]
+    #[arg(short = 'w', long = "workers", default_value_t = 2)]
     workers: usize,
-    #[arg(short = 'l', long = "max-size-kb", default_value_t = 500)]
+    #[arg(short = 'M', long = "max-size-kb", default_value_t = 500)]
     paste_len_kb: usize,
     #[arg(short = 't', long = "timeout-ms", default_value_t = 2000)]
     read_timeout: u64,
     #[arg(short = 'd', long = "directory", default_value_t = String::from("/var/lib/notesock"))]
     paste_dir: String,
-    #[arg(short = 'x', long = "cleanup-after-sec", default_value_t = 240)]
+    #[arg(short = 'c', long = "cleanup-after-sec", default_value_t = 240)]
     paste_expiry_sec: u64,
     #[arg(long = "no-cleanup", default_value_t = false)]
     no_clean_pastedir_on_start: bool,
+    #[arg(short = 'l', long = "id-lower", default_value_t = String::from("1000"))]
+    id_range_lower: String,
+    #[arg(short = 'u', long = "id-upper", default_value_t = String::from("zzzz"))]
+    id_range_upper: String,
 }
 
-type SafeGen = Arc<Mutex<PartitionIdGenerator>>;
+type SafeGen = Arc<Mutex<RandomIdGenerator<usize>>>;
 
 const CLEANUP_WORKER_TAG: &str = "🧹";
 
 const SOCKET_FILENAME: &str = "note.sock";
-
-const PASTE_ID_MIN_LEN: usize = 5;
-
-// regexp should describe set of PASTE_ID_SYMBOLS
-const PASTE_ID_REGEXP: &str = "[a-z0-9]";
 
 fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeGen) {
     loop {
@@ -262,7 +261,7 @@ fn paste_worker(
                 stream
                     .write_all(
                         format!(
-                            "{}/{} | expires in {}\n",
+                            "{}/{} | 🧦 expires in {}\n",
                             args.host, paste_id, expiry_string
                         )
                         .as_bytes(),
@@ -294,7 +293,7 @@ fn main() {
     }
 
     let paste_id_regex =
-        regex::Regex::new(&format!("{}{{{},}}", PASTE_ID_REGEXP, PASTE_ID_MIN_LEN))
+        regex::Regex::new(&format!("{}{{{},}}", ID_REGEXP, args.id_range_lower.len()))
             .expect("Regex compilation failed");
 
     let id_set: HashSet<_> = fs::read_dir(paste_path)
@@ -368,8 +367,13 @@ fn main() {
     });
 
     let generator = Arc::new(Mutex::new(
-        PartitionIdGenerator::new("1111", "zzzz", true, 1024, id_set)
-            .expect("Could not create id generator"),
+        RandomIdGenerator::<usize>::new(
+            &args.id_range_lower,
+            &args.id_range_upper,
+            Some(256),
+            id_set,
+        )
+        .expect("Could not create id generator"),
     ));
 
     info!(
