@@ -17,17 +17,22 @@
  *
  */
 
+#![feature(test)]
+
+mod id_gen;
+
 use clap::Parser;
+use id_gen::sample_unique;
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
 use std::collections::HashSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::{self, Permissions};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
@@ -68,37 +73,6 @@ const PASTE_ID_MAX_ITER: usize = 3;
 
 // regexp should describe set of PASTE_ID_SYMBOLS
 const PASTE_ID_REGEXP: &str = "[a-z0-9]";
-const PASTE_ID_SYMBOLS: [char; 36] = [
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
-    't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-];
-
-fn sample_unique(ids: &MutexGuard<'_, HashSet<OsString>>) -> String {
-    let generate = |len| {
-        PASTE_ID_SYMBOLS
-            .choose_multiple(&mut thread_rng(), len)
-            .collect::<String>()
-    };
-
-    let mut len = PASTE_ID_MIN_LEN;
-
-    let mut lucky = generate(len);
-
-    if !ids.is_empty() {
-        let mut i = 0;
-        while ids.contains(OsStr::new(&lucky)) {
-            if i > PASTE_ID_MAX_ITER {
-                // not so lucky
-                i = 0;
-                len *= 2;
-            }
-            lucky = generate(len);
-            i += 1;
-        }
-    }
-
-    lucky
-}
 
 fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeSet) {
     loop {
@@ -239,7 +213,7 @@ fn paste_worker(
             Ok(payload) => {
                 let mut ids = ids.lock().expect("Some thread has crashed!");
 
-                let paste_id = sample_unique(&ids);
+                let paste_id = sample_unique(&ids, PASTE_ID_MIN_LEN, PASTE_ID_MAX_ITER);
 
                 let paste_dir_path = paste_dir.join(&paste_id);
 
