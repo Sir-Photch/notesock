@@ -19,9 +19,11 @@
 #![cfg_attr(feature = "bench", feature(test))]
 
 mod id_gen;
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use id_gen::*;
 
 use clap::Parser;
+
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
@@ -34,7 +36,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufReader, Read, Write};
 
 use crate::id_gen::IdGenerator;
 
@@ -50,8 +52,8 @@ struct Args {
     host: String,
     #[arg(short = 'w', long = "workers", default_value_t = 2)]
     workers: usize,
-    #[arg(short = 'M', long = "max-size-kb", default_value_t = 500)]
-    paste_len_kb: usize,
+    #[arg(short = 'M', long = "max-size-kib", default_value_t = 512)]
+    paste_len_kib: usize,
     #[arg(short = 't', long = "timeout-ms", default_value_t = 2000)]
     read_timeout: u64,
     #[arg(short = 'd', long = "directory", default_value_t = String::from("/var/lib/notesock"))]
@@ -64,6 +66,10 @@ struct Args {
     id_range_lower: String,
     #[arg(short = 'u', long = "id-upper", default_value_t = String::from("zzzz"))]
     id_range_upper: String,
+    #[arg(long = "talk-proxy", default_value_t = false)]
+    talk_proxy: bool,
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
 }
 
 type SafeGen = Arc<Mutex<RandomIdGenerator<usize>>>;
@@ -121,157 +127,152 @@ fn paste_worker(
     tx_clean: mpsc::Sender<(Instant, PathBuf)>,
     args: Args,
 ) {
-    let paste_limit = args.paste_len_kb * 1000;
+    let paste_limit = args.paste_len_kib * 1024;
+    // add some slack to account for proxy header
+    let slack = 1 + if args.talk_proxy { 1024 } else { 0 };
     let paste_dir = Path::new(&args.paste_dir);
     let paste_timeout = Duration::from_secs(args.paste_expiry_sec);
+    let exceeded_message = format!("Exceeded limit of {} kiB\n", args.paste_len_kib);
+    let expiry_message = format!(
+        "{}/_ID_ | 🧦 expires in {}\n",
+        args.host,
+        match args.paste_expiry_sec {
+            x if x > 60 => match x % 60 {
+                y if y > 0 => format!("{}m {}s", x / 60, y),
+                _ => format!("{}m", x / 60),
+            },
+            x => format!("{}s", x),
+        }
+    );
 
-    // +1 to catch pastes that violate the limit
-    let mut buf = vec![0; paste_limit + 1];
+    let mut buf = Vec::with_capacity(paste_limit + slack);
 
-    let shutdown = |stream: &mut Socket, mode: Shutdown, log_error_as: Option<log::Level>| {
+    let shutdown = |stream: &mut Socket, mode: Shutdown| {
         if mode == Shutdown::Write || mode == Shutdown::Both {
             stream.flush().ok();
         }
         stream
             .shutdown(mode)
-            .map_err(|why| {
-                if let Some(level) = log_error_as {
-                    log::log!(level, "{} | {:?}: {}", tag, mode, why)
-                }
-            })
+            .map_err(|why| debug!("{} | {:?}: {}", tag, mode, why))
             .ok()
     };
+    let reply = |stream: &mut Socket, message: &str| {
+        stream
+            .write_all(message.as_bytes())
+            .map_err(|why| debug!("{} | reply error: {}", tag, why))
+            .ok();
+    };
 
-    'outer: loop {
+    loop {
         let mut stream = match rx_paste.recv() {
             Ok(stream) => stream,
             Err(why) => {
-                error!("{} | rx.recv: {}", tag, why);
+                debug!("{} | rx.recv: {}", tag, why);
                 continue;
             }
         };
 
         stream
             .set_read_timeout(Some(Duration::from_millis(args.read_timeout)))
-            .map_err(|why| warn!("{} | set_read_timeout: {}", tag, why))
+            .map_err(|why| debug!("{} | set_read_timeout: {}", tag, why))
             .ok();
         stream
             .set_write_timeout(Some(Duration::from_millis(args.read_timeout)))
-            .map_err(|why| warn!("{} | set_write_timeout: {}", tag, why))
+            .map_err(|why| debug!("{} | set_write_timeout: {}", tag, why))
             .ok();
 
-        // this is necessary if the buffer is preallocated because
-        //  1. stream.read() will only read up to buf.len()
-        //  2. buf.truncate(newlen) reduces buf.len(),
-        //     which reduces it's effective size for stream.read()
-        buf.resize(paste_limit + 1, 0);
+        buf.clear();
 
-        let mut read = 0;
+        let msg_size = match BufReader::new(&stream)
+            .take(paste_limit as u64 + slack as u64)
+            .read_to_end(&mut buf)
+        {
+            Ok(read) => read,
+            Err(why) => {
+                debug!("{} | take.read_to_end: {}", tag, why);
+                shutdown(&mut stream, Shutdown::Both);
+                continue;
+            }
+        };
 
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    read += n;
+        shutdown(&mut stream, Shutdown::Read);
 
-                    if read > paste_limit {
-                        stream
-                            .write_all(
-                                format!("Exceeded limit of {}kB\n", args.paste_len_kb).as_bytes(),
-                            )
-                            .map_err(|why| {
-                                warn!("{} | stream.write_all on filesize limit: {}", tag, why)
-                            })
-                            .ok();
-
-                        shutdown(&mut stream, Shutdown::Both, Some(Level::Warn));
-
-                        continue 'outer;
-                    }
-                }
-                Err(why) if why.kind() == ErrorKind::Interrupted => continue,
+        if args.talk_proxy {
+            let mut buf = &buf.as_mut_slice()[..];
+            match proxy_protocol::parse(&mut buf) {
+                Ok(header) => info!("{} | {} kiB incoming | {:?}", msg_size / 1024, tag, header),
                 Err(why) => {
-                    warn!("{} | stream.read: {}", tag, why);
-
-                    continue 'outer;
+                    debug!("{} | proxy_protocol.parse: {}", tag, why);
+                    shutdown(&mut stream, Shutdown::Write);
+                    continue;
                 }
             }
         }
 
-        shutdown(&mut stream, Shutdown::Read, Some(Level::Warn));
+        // remaining elements after parse() possibly drained proxy header
+        let payload_size = buf.len();
+        debug_assert!(!args.talk_proxy || payload_size != msg_size);
 
-        buf.truncate(read);
-        match std::str::from_utf8(&buf) {
-            Err(_) => {
-                stream
-                    .write_all(b"invalid utf-8\n")
-                    .map_err(|why| warn!("{} | stream.write_all on invalid utf-8: {}", tag, why))
-                    .ok();
+        if payload_size > paste_limit {
+            warn!("{} | exceeded paste limit", tag);
+            reply(&mut stream, &exceeded_message);
+            shutdown(&mut stream, Shutdown::Write);
+        }
+
+        let payload = match std::str::from_utf8(&buf) {
+            Ok(pld) => pld,
+            Err(why) => {
+                warn!("{} | invalid utf-8: {}", tag, why);
+                reply(&mut stream, "invalid utf-8\n");
+                shutdown(&mut stream, Shutdown::Write);
+                continue;
             }
-            Ok(payload) => {
-                let mut gen = gen.lock().expect("Some thread has crashed!");
+        };
 
-                let paste_id = match gen.get() {
-                    Some(id) => id,
-                    None => {
-                        // no ID can be generated, "adress space is full"
-                        stream
-                            .write_all(
-                                b"server is currently not accepting new pastes. try again later.\n",
-                            )
-                            .map_err(|why| {
-                                warn!("{} | stream.write_all on unavailable ids: {}", tag, why)
-                            })
-                            .ok();
-                        shutdown(&mut stream, Shutdown::Both, Some(Level::Warn));
-                        continue;
-                    }
-                };
+        let mut gen = gen.lock().expect("Some thread has crashed!");
 
-                let paste_dir_path = paste_dir.join(&paste_id);
+        let paste_id = match gen.get() {
+            Some(id) => id,
+            None => {
+                // no ID can be generated, "address space is full"
+                warn!(
+                    "{} | Exhausted id generation in ({},{})",
+                    tag, args.id_range_lower, args.id_range_upper
+                );
+                reply(
+                    &mut stream,
+                    "server is currently not accepting new pastes. try again later.\n",
+                );
+                shutdown(&mut stream, Shutdown::Write);
+                continue;
+            }
+        };
 
-                match fs::create_dir_all(&paste_dir_path).and_then(|()| {
-                    let paste_path = paste_dir_path.join("index.txt");
-                    fs::write(&paste_path, payload)?;
-                    Ok(paste_path)
-                }) {
-                    Ok(paste_path) => {
-                        info!("{} | saved paste to {}", tag, paste_path.display());
-                        tx_clean
-                            .send((Instant::now() + paste_timeout, paste_dir_path))
-                            .expect("Where did my cleanup task go?"); // if we can't cleanup anymore, it is time to panic!
-                    }
-                    Err(why) => {
-                        gen.remove(&paste_id);
-                        error!("{} | write-to-disk error: {}", tag, why);
-                        continue;
-                    }
-                }
+        let paste_dir_path = paste_dir.join(&paste_id);
 
-                drop(gen);
-
-                let expiry_string = match args.paste_expiry_sec {
-                    x if x > 60 => match x % 60 {
-                        y if y > 0 => format!("{}m {}s", x / 60, y),
-                        _ => format!("{}m", x / 60),
-                    },
-                    x => format!("{}s", x),
-                };
-
-                stream
-                    .write_all(
-                        format!(
-                            "{}/{} | 🧦 expires in {}\n",
-                            args.host, paste_id, expiry_string
-                        )
-                        .as_bytes(),
-                    )
-                    .map_err(|why| error!("{} | stream.write_all on success reply: {}", tag, why))
-                    .ok();
+        match fs::create_dir_all(&paste_dir_path).and_then(|()| {
+            let paste_path = paste_dir_path.join("index.txt");
+            fs::write(&paste_path, payload)?;
+            Ok(paste_path)
+        }) {
+            Ok(paste_path) => {
+                info!("{} | saved paste to {}", tag, paste_path.display());
+                tx_clean
+                    .send((Instant::now() + paste_timeout, paste_dir_path))
+                    .expect("Where did my cleanup task go?"); // if we can't cleanup anymore, it is time to panic!
+            }
+            Err(why) => {
+                gen.remove(&paste_id);
+                error!("{} | write-to-disk error: {}", tag, why);
+                reply(&mut stream, "an internal error has occurred");
+                shutdown(&mut stream, Shutdown::Write);
+                continue;
             }
         }
 
-        shutdown(&mut stream, Shutdown::Write, Some(Level::Warn));
+        drop(gen);
+        reply(&mut stream, &expiry_message.replace("_ID_", &paste_id));
+        shutdown(&mut stream, Shutdown::Write);
     }
 }
 
@@ -333,28 +334,35 @@ fn main() {
     socket
         .bind(&SockAddr::unix(&socket_path).expect("Bad socket address"))
         .expect("Could not bind socket");
+    fs::set_permissions(&socket_path, Permissions::from_mode(args.socket_mode))
+        .expect("Could not set socket permission");
     socket
         .set_nonblocking(false)
         .expect("Could not set socket to blocking");
-    fs::set_permissions(&socket_path, Permissions::from_mode(args.socket_mode))
-        .expect("Could not set socket permission");
+    /*
+    socket
+        .set_recv_buffer_size(args.paste_len_kb * 1024)
+        .expect("Could not set recv buffer size");
+    */
     socket
         .listen(args.workers as i32 * 2)
         .expect("Could not start listening");
 
     CombinedLogger::init(vec![TermLogger::new(
-        LevelFilter::Trace,
+        args.verbose.log_level_filter(),
         Config::default(),
         TerminalMode::Stdout,
         ColorChoice::Auto,
     )])
     .unwrap();
 
+    debug!("socket recv buffer size {:?}", socket.recv_buffer_size());
+
     if let Some(ref set) = id_set {
         if !args.no_clean_pastedir_on_start {
             for f in set.iter() {
                 fs::remove_dir_all(paste_path.join(f))
-                    .map(|()| info!("Cleaned up old '{:?}'", f))
+                    .map(|()| info!("Cleaned up old {:?}", f))
                     .map_err(|why| error!("Could not clean up '{:?}': {}", f, why))
                     .ok();
             }
