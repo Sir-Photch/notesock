@@ -24,6 +24,8 @@ use id_gen::*;
 
 use clap::Parser;
 
+use proxy_protocol::version1::ProxyAddresses;
+use proxy_protocol::ProxyHeader;
 use rand::prelude::*;
 use simplelog::*;
 use socket2::{Domain, SockAddr, Socket, Type};
@@ -79,6 +81,26 @@ type SafeGen = Arc<Mutex<RandomIdGenerator<usize>>>;
 const CLEANUP_WORKER_TAG: &str = "🧹";
 
 const SOCKET_FILENAME: &str = "note.sock";
+
+fn peer_ip_from_header(header: &ProxyHeader) -> Option<String> {
+    match header {
+        ProxyHeader::Version1 { addresses } => match addresses {
+            ProxyAddresses::Ipv4 { source, .. } => Some(source.ip().to_string()),
+            ProxyAddresses::Ipv6 { source, .. } => Some(source.ip().to_string()),
+            _ => None,
+        },
+        ProxyHeader::Version2 { addresses, .. } => match addresses {
+            proxy_protocol::version2::ProxyAddresses::Ipv4 { source, .. } => {
+                Some(source.ip().to_string())
+            }
+            proxy_protocol::version2::ProxyAddresses::Ipv6 { source, .. } => {
+                Some(source.ip().to_string())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 fn cleanup_worker(rx_cleanup: mpsc::Receiver<(Instant, PathBuf)>, ids: SafeGen) {
     loop {
@@ -200,23 +222,28 @@ fn paste_worker(
 
         let (mut header_len, mut payload_len) = (0, msg_size);
 
-        if args.talk_proxy {
+        let peer = if !args.talk_proxy {
+            None
+        } else {
             let msg_len = buf.len();
 
             let mut slice = &buf.as_mut_slice()[..];
-            match proxy_protocol::parse(&mut slice) {
-                Ok(header) => info!(
-                    "{} | {} kiB incoming | {:?}",
-                    tag,
-                    msg_size as f32 / 1024.0,
+            let header = match proxy_protocol::parse(&mut slice) {
+                Ok(header) => {
+                    debug!(
+                        "{} | {} kiB incoming | {:?}",
+                        tag,
+                        msg_size as f32 / 1024.0,
+                        header
+                    );
                     header
-                ),
+                }
                 Err(why) => {
                     debug!("{} | proxy_protocol.parse: {}", tag, why);
                     shutdown(&mut stream, Shutdown::Write);
                     continue;
                 }
-            }
+            };
 
             payload_len = slice.len();
             header_len = msg_len - payload_len;
@@ -240,10 +267,18 @@ fn paste_worker(
                     })
                 )
             }
-        }
+
+            peer_ip_from_header(&header).or_else(|| {
+                debug!(
+                    "{} | peer_ip_from_header: could not get IP from header: {:?}",
+                    tag, header
+                );
+                None
+            })
+        }.unwrap_or("peer".into());
 
         if payload_len > paste_limit {
-            warn!("{} | exceeded paste limit", tag);
+            warn!("{} | {} exceeded paste limit", tag, peer);
             reply(&mut stream, &exceeded_message);
             shutdown(&mut stream, Shutdown::Write);
             continue;
@@ -252,7 +287,7 @@ fn paste_worker(
         let payload = match std::str::from_utf8(&buf[header_len..]) {
             Ok(pld) => pld,
             Err(why) => {
-                warn!("{} | invalid utf-8: {}", tag, why);
+                warn!("{} | {} invalid utf-8: {}", tag, peer, why);
                 reply(&mut stream, "invalid utf-8\n");
                 shutdown(&mut stream, Shutdown::Write);
                 continue;
@@ -286,14 +321,14 @@ fn paste_worker(
             Ok(paste_path)
         }) {
             Ok(paste_path) => {
-                info!("{} | saved paste to {}", tag, paste_path.display());
+                info!("{} | {} saved paste to {}", tag, peer, paste_path.display());
                 tx_clean
                     .send((Instant::now() + paste_timeout, paste_dir_path))
                     .expect("Where did my cleanup task go?"); // if we can't cleanup anymore, it is time to panic!
             }
             Err(why) => {
                 gen.remove(&paste_id);
-                error!("{} | write-to-disk error: {}", tag, why);
+                error!("{} | {} write-to-disk error: {}", tag, peer, why);
                 reply(&mut stream, "an internal error has occurred");
                 shutdown(&mut stream, Shutdown::Write);
                 continue;
