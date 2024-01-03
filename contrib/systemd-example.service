@@ -10,7 +10,7 @@ EnvironmentFile=/etc/notesock/notesock.env
 WorkingDirectory=/var/lib/notesock
 ReadWritePaths=/var/lib/notesock
 RuntimeDirectory=notesock
-ExecStart=/usr/bin/notesock -s /run/notesock -d /var/lib/notesock -w $N_WORKERS --host $HOST -x $EXPIRY_SECONDS -l $MAX_PASTE_SIZE_KB -t $TIMEOUT_MS
+ExecStart=/usr/bin/notesock -s /run/notesock -d /var/lib/notesock -w $N_WORKERS -H $HOST -c $EXPIRY_SECONDS -M $MAX_PASTE_SIZE_KB -t $TIMEOUT_MS -l $ID_LOWER -u $ID_UPPER $TALK_PROXY
 Restart=on-failure
 RestartSec=30s
 

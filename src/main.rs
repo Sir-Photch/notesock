@@ -275,7 +275,8 @@ fn paste_worker(
                 );
                 None
             })
-        }.unwrap_or("peer".into());
+        }
+        .unwrap_or("peer".into());
 
         if payload_len > paste_limit {
             warn!("{} | {} exceeded paste limit", tag, peer);
