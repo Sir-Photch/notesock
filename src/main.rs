@@ -156,17 +156,26 @@ fn paste_worker(
     let paste_dir = Path::new(&args.paste_dir);
     let paste_timeout = Duration::from_secs(args.paste_expiry_sec);
     let exceeded_message = format!("Exceeded limit of {} kiB\n", args.paste_len_kib);
-    let expiry_message = format!(
-        "{}/_ID_ | 🧦 expires in {}\n",
-        args.host,
-        match args.paste_expiry_sec {
-            x if x > 60 => match x % 60 {
-                y if y > 0 => format!("{}m {}s", x / 60, y),
-                _ => format!("{}m", x / 60),
-            },
-            x => format!("{}s", x),
-        }
-    );
+
+    let exp_d = args.paste_expiry_sec / (60 * 60 * 24);
+    let exp_h = (args.paste_expiry_sec % (60 * 60 * 24)) / 3600;
+    let exp_m = (args.paste_expiry_sec % 3600) / 60;
+    let exp_s = args.paste_expiry_sec % 60;
+
+    let mut expiry_message = format!("{}/_ID_ | 🧦 expires in", args.host);
+    if 0 < exp_d {
+        expiry_message.push_str(&format!(" {}d", exp_d));
+    }
+    if 0 < exp_h {
+        expiry_message.push_str(&format!(" {}h", exp_h));
+    }
+    if 0 < exp_m {
+        expiry_message.push_str(&format!(" {}m", exp_m));
+    }
+    if 0 < exp_s {
+        expiry_message.push_str(&format!(" {}s", exp_s));
+    }
+    expiry_message.push('\n');
 
     let mut buf = Vec::with_capacity(paste_limit + slack);
 
